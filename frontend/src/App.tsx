@@ -83,6 +83,12 @@ export default function App() {
     }
   }
 
+  function handleDisconnect() {
+    setAccount(null);
+    clearAgreement();
+    setError(null);
+  }
+
   function shortAddr(a: string): string {
     return a.slice(0, 6) + "…" + a.slice(-4);
   }
@@ -296,11 +302,16 @@ export default function App() {
           <button className={"nav-link" + (tab === "agreements" ? " active" : "")} onClick={() => setTab("agreements")}>Agreements</button>
           <button className={"nav-link" + (tab === "how" ? " active" : "")} onClick={() => setTab("how")}>How it works</button>
           {account ? (
-            <div className={"wallet-pill" + (isOwner ? " owner" : "")}>
+            <button
+              className={"wallet-pill" + (isOwner ? " owner" : "")}
+              onClick={handleDisconnect}
+              title="Click to disconnect this wallet from the app"
+              style={{ cursor: "pointer", border: "none", font: "inherit" }}
+            >
               <span className="wallet-dot" />
               <span>{shortAddr(account)}</span>
               {isOwner && <span style={{ color: "var(--violet-lit)" }}>· operator</span>}
-            </div>
+            </button>
           ) : (
             <button className="btn btn-primary" onClick={handleConnect} disabled={connecting}>
               {connecting ? "Connecting…" : "Connect wallet"}
