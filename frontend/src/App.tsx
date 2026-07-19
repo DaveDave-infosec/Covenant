@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import "./styles/covenant.css";
 import { connectWallet, getCurrentAccount, onAccountChange } from "./lib/genlayer";
 import { OWNER_ADDRESS } from "./lib/constants";
@@ -290,13 +291,13 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div className="brand">
+        <Link to="/" className="brand" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="brand-mark">§</div>
           <div>
             <div className="brand-name">Covenant</div>
             <div className="brand-tag">Service promises that settle themselves</div>
           </div>
-        </div>
+        </Link>
 
         <div className="nav">
           <button className={"nav-link" + (tab === "agreements" ? " active" : "")} onClick={() => setTab("agreements")}>Agreements</button>
