@@ -8,11 +8,17 @@ VAULT_KEY = "__vault__"
 
 
 class CovenantVault(gl.Contract):
-    owner: str
+    # v2: NO owner authority. The deployer is only the fee beneficiary.
+    # create is permissionless (verified against the monitor cross-contract),
+    # checkpoints are read from the monitor directly at settle time (the v1
+    # record_checkpoint relay no longer exists), and settle is permissionless
+    # once the agreed checkpoint count is met.
     fee_bps: u256                   # protocol fee in basis points (100 = 1%)
-    fee_wallet: str                 # where protocol fees accrue (owner by default)
+    fee_wallet: str                 # where protocol fees accrue (deployer)
+    monitor: Address                # the CovenantMonitor this vault trusts
 
     # ---- internal token ledger (the vault IS the token — Holdline pattern) ----
+    # mint is an OPEN TESTNET FAUCET by design: demo money, not value.
     balances: TreeMap[str, u256]
 
     agreement_count: u256
@@ -27,10 +33,12 @@ class CovenantVault(gl.Contract):
     v_status: TreeMap[str, str]             # "created" | "active" | "settled"
     v_outcome: TreeMap[str, str]            # final tier once settled
 
-    # ---- recorded checkpoint verdicts (flat parallel TreeMaps) ----
-    # keyed by "<agreement_id>:<checkpoint_index>"
-    v_cp_count: TreeMap[str, u256]
-    v_cp_tier: TreeMap[str, str]
+    # ---- monitor linkage (v2) ----
+    v_monitor_id: TreeMap[str, str]         # monitor agreement this vault case is bound to
+    monitor_id_used: TreeMap[str, bool]     # each monitor agreement backs at most one vault case
+    v_checkpoints_required: TreeMap[str, u256]  # agreed checkpoint count before settle unlocks
+    v_start_cp: TreeMap[str, u256]          # monitor cp_count at activation — only later checkpoints count
+    v_settled_cp_count: TreeMap[str, u256]  # how many checkpoints the settlement tallied
 
     # ---- final distribution record (keyed by agreement id) ----
     v_provider_net: TreeMap[str, u256]
@@ -38,15 +46,16 @@ class CovenantVault(gl.Contract):
     v_bond_to_provider: TreeMap[str, u256]
     v_fee_charged: TreeMap[str, u256]
 
-    def __init__(self, fee_bps: u256):
-        owner_addr = gl.message.sender_address.as_hex.lower()
-        self.owner = owner_addr
-        self.fee_wallet = owner_addr
+    def __init__(self, fee_bps: u256, monitor_address: str):
+        deployer = gl.message.sender_address.as_hex.lower()
+        self.fee_wallet = deployer
         self.fee_bps = fee_bps
+        self.monitor = Address(monitor_address)
         self.agreement_count = u256(0)
 
     # ---------------------------------------------------------------
-    # Internal token ledger (Holdline pattern — the vault IS the token)
+    # Internal token ledger — OPEN TESTNET FAUCET (documented as such).
+    # In production this would be a deposit of a real token.
     # ---------------------------------------------------------------
     @gl.public.write
     def mint(self, to_address: str, amount: u256) -> None:
@@ -60,7 +69,11 @@ class CovenantVault(gl.Contract):
         return self.balances[acct] if acct in self.balances else u256(0)
 
     # ---------------------------------------------------------------
-    # Create the agreement record (parties + amounts). Owner/relay only.
+    # Create the agreement record — PERMISSIONLESS (v2).
+    # Safe because creating moves no funds: parties only commit by
+    # locking. The vault verifies against the monitor cross-contract
+    # that the referenced agreement exists and names the same parties,
+    # so a fraudulent or mistyped linkage is rejected by contract law.
     # ---------------------------------------------------------------
     @gl.public.write
     def create_agreement(
@@ -69,29 +82,44 @@ class CovenantVault(gl.Contract):
         customer: str,
         payment: u256,
         bond: u256,
+        monitor_id: str,
+        checkpoints_required: u256,
     ) -> str:
-        sender = gl.message.sender_address.as_hex.lower()
-        assert sender == self.owner, "only owner may create agreements"
+        assert int(checkpoints_required) >= 1, "checkpoints_required must be at least 1"
+        assert not self.monitor_id_used.get(monitor_id, False), "monitor agreement already bound to a vault case"
+
+        mon = gl.get_contract_at(self.monitor)
+        exists = mon.view().get_exists(monitor_id)
+        assert exists, "monitor agreement does not exist"
+
+        m = mon.view().get_agreement(monitor_id)
+        prov = provider.lower()
+        cust = customer.lower()
+        assert str(m["provider"]).lower() == prov, "provider does not match monitor agreement"
+        assert str(m["customer"]).lower() == cust, "customer does not match monitor agreement"
 
         idx = u256(int(self.agreement_count) + 1)
         self.agreement_count = idx
         aid = str(idx)
 
-        self.v_provider[aid] = provider.lower()
-        self.v_customer[aid] = customer.lower()
+        self.v_provider[aid] = prov
+        self.v_customer[aid] = cust
         self.v_payment[aid] = payment
         self.v_bond[aid] = bond
         self.v_payment_locked[aid] = False
         self.v_bond_locked[aid] = False
         self.v_status[aid] = "created"
         self.v_outcome[aid] = ""
-        self.v_cp_count[aid] = u256(0)
+        self.v_monitor_id[aid] = monitor_id
+        self.monitor_id_used[monitor_id] = True
+        self.v_checkpoints_required[aid] = checkpoints_required
+        self.v_start_cp[aid] = u256(0)
+        self.v_settled_cp_count[aid] = u256(0)
 
         return aid
 
     # ---------------------------------------------------------------
-    # Customer locks the service payment (internal balance move into vault).
-    # Caller must be the customer on the agreement.
+    # Customer locks the service payment. Caller must be the customer.
     # ---------------------------------------------------------------
     @gl.public.write
     def lock_payment(self, agreement_id: str) -> None:
@@ -106,7 +134,6 @@ class CovenantVault(gl.Contract):
         bal = int(self.balances[caller]) if caller in self.balances else 0
         assert bal >= amount, "insufficient genUSDC balance for payment"
 
-        # move from customer into the vault's own balance
         self.balances[caller] = u256(bal - amount)
         vbal = int(self.balances[VAULT_KEY]) if VAULT_KEY in self.balances else 0
         self.balances[VAULT_KEY] = u256(vbal + amount)
@@ -115,8 +142,7 @@ class CovenantVault(gl.Contract):
         self._maybe_activate(aid)
 
     # ---------------------------------------------------------------
-    # Provider locks the performance bond (internal balance move into vault).
-    # Caller must be the provider on the agreement.
+    # Provider locks the performance bond. Caller must be the provider.
     # ---------------------------------------------------------------
     @gl.public.write
     def lock_bond(self, agreement_id: str) -> None:
@@ -141,50 +167,45 @@ class CovenantVault(gl.Contract):
     def _maybe_activate(self, aid: str) -> None:
         if self.v_payment_locked.get(aid, False) and self.v_bond_locked.get(aid, False):
             self.v_status[aid] = "active"
+            # snapshot the monitor's checkpoint count at activation:
+            # only checkpoints run while funds are at stake count toward settlement.
+            mon = gl.get_contract_at(self.monitor)
+            current = mon.view().get_checkpoint_count(self.v_monitor_id[aid])
+            self.v_start_cp[aid] = u256(int(current))
 
     # ---------------------------------------------------------------
-    # Record a checkpoint verdict into the vault (owner/relay only).
-    # ---------------------------------------------------------------
-    @gl.public.write
-    def record_checkpoint(self, agreement_id: str, tier: str) -> None:
-        sender = gl.message.sender_address.as_hex.lower()
-        assert sender == self.owner, "only owner may record checkpoints"
-
-        aid = agreement_id
-        assert self.v_status.get(aid, "") == "active", "agreement not active"
-        assert tier in ("satisfied", "minor", "material", "critical"), "invalid tier"
-
-        cp_idx = int(self.v_cp_count.get(aid, u256(0)))
-        key = aid + ":" + str(cp_idx)
-        self.v_cp_tier[key] = tier
-        self.v_cp_count[aid] = u256(cp_idx + 1)
-
-    # ---------------------------------------------------------------
-    # Final settlement — DETERMINISTIC tally, all internal balance moves.
+    # Final settlement — PERMISSIONLESS (v2). Anyone may call once the
+    # agreed number of checkpoints has run. Verdicts are read from the
+    # monitor contract directly; no human relays them. The math is the
+    # same deterministic tally proven in v1.
     # ---------------------------------------------------------------
     @gl.public.write
     def settle(self, agreement_id: str) -> str:
-        sender = gl.message.sender_address.as_hex.lower()
-        assert sender == self.owner, "only owner may settle"
-
         aid = agreement_id
         assert self.v_status.get(aid, "") == "active", "agreement not active"
 
-        n = int(self.v_cp_count.get(aid, u256(0)))
-        assert n > 0, "no checkpoints recorded"
+        mon = gl.get_contract_at(self.monitor)
+        monitor_id = self.v_monitor_id[aid]
+        total = int(mon.view().get_checkpoint_count(monitor_id))
+        start = int(self.v_start_cp.get(aid, u256(0)))
+        n = total - start
+        required = int(self.v_checkpoints_required.get(aid, u256(1)))
+        assert n >= required, "agreed checkpoint count not yet reached"
 
         c_minor = 0
         c_material = 0
         c_critical = 0
-        for i in range(n):
-            key = aid + ":" + str(i)
-            t = self.v_cp_tier.get(key, "")
+        for i in range(start, total):
+            t = str(mon.view().get_checkpoint_tier(monitor_id, u256(i))).lower().strip()
             if t == "minor":
                 c_minor += 1
             elif t == "material":
                 c_material += 1
             elif t == "critical":
                 c_critical += 1
+            elif t != "satisfied":
+                # defensive: an unrecognized tier counts as material
+                c_material += 1
 
         if c_critical >= 1 or (c_material * 2) > n:
             outcome = "critical"
@@ -230,8 +251,6 @@ class CovenantVault(gl.Contract):
         provider = self.v_provider[aid]
         customer = self.v_customer[aid]
 
-        # pull the total settlement amount out of the vault's balance and
-        # distribute internally
         total_out = provider_net + customer_total + bond_to_provider + fee
         vbal = int(self.balances[VAULT_KEY]) if VAULT_KEY in self.balances else 0
         assert vbal >= total_out, "vault balance below settlement total"
@@ -255,6 +274,7 @@ class CovenantVault(gl.Contract):
         self.v_customer_total[aid] = u256(customer_total)
         self.v_bond_to_provider[aid] = u256(bond_to_provider)
         self.v_fee_charged[aid] = u256(fee)
+        self.v_settled_cp_count[aid] = u256(n)
         self.v_outcome[aid] = outcome
         self.v_status[aid] = "settled"
 
@@ -276,13 +296,11 @@ class CovenantVault(gl.Contract):
             "bond_locked": self.v_bond_locked.get(aid, False),
             "status": self.v_status.get(aid, ""),
             "outcome": self.v_outcome.get(aid, ""),
-            "checkpoint_count": str(self.v_cp_count.get(aid, u256(0))),
+            "monitor_id": self.v_monitor_id.get(aid, ""),
+            "checkpoints_required": str(self.v_checkpoints_required.get(aid, u256(0))),
+            "start_cp": str(self.v_start_cp.get(aid, u256(0))),
+            "settled_cp_count": str(self.v_settled_cp_count.get(aid, u256(0))),
         }
-
-    @gl.public.view
-    def get_checkpoint_tier(self, agreement_id: str, index: u256) -> str:
-        key = agreement_id + ":" + str(int(index))
-        return self.v_cp_tier.get(key, "")
 
     @gl.public.view
     def get_settlement(self, agreement_id: str) -> dict:
@@ -301,9 +319,13 @@ class CovenantVault(gl.Contract):
         return self.agreement_count
 
     @gl.public.view
-    def get_owner(self) -> str:
-        return self.owner
+    def get_fee_wallet(self) -> str:
+        return self.fee_wallet
 
     @gl.public.view
     def get_fee_bps(self) -> u256:
         return self.fee_bps
+
+    @gl.public.view
+    def get_monitor_address(self) -> str:
+        return self.monitor.as_hex

@@ -102,3 +102,28 @@ Each row expands to show the full telemetry strip, the six-check breakdown per c
 - **Settle is greyed out.** You haven't run the required number of checkpoints yet.
 - **Settle "did not take."** The vault couldn't fund the payout — make sure both sides were minted *and* locked. This is the contract correctly refusing an underfunded settlement.
 - **You changed wallets and the screen looks stale.** Hit **↻ Refresh state** to re-read from the chain.
+
+---
+
+## Verification
+
+Every decentralization claim here is verifiable in the repo or on-chain:
+
+- **Settlement consumes authenticated monitor verdicts, cross-contract.**
+  `CovenantVault.settle()` reads each verdict directly from the monitor via
+  `gl.get_contract_at(self.monitor).view().get_checkpoint_tier(...)` — it never
+  accepts a tier from its caller, and no `record_checkpoint` relay exists. See
+  [`contracts/covenant_vault.py`](./contracts/covenant_vault.py), function `settle`.
+
+- **Permissionless settlement, proven on-chain.** A bystander wallet
+  (`0xc47F4102428E65E671379453F39b26eb744d96C9`) — neither party nor deployer —
+  settled a live agreement:
+  [settlement transaction](https://explorer-studio.genlayer.com/tx/0x29d881888c25f9e499e7728ce32979793372f2e6dc2a13a0622c65cd7d03099e)
+  (SUCCESS, `"satisfied"`, FINALIZED).
+
+- **Full lifecycle test.** [`tests/test_lifecycle.py`](./tests/test_lifecycle.py)
+  verifies the real on-chain settled agreement — asserting permissionless
+  settlement (settler is neither party nor deployer), verdict authentication
+  (settled outcome derives from the monitor's recorded tier), and exact value
+  conservation. Runs keyless against live contract state.
+  [`tests/README.md`](./tests/README.md) documents the on-chain evidence.

@@ -39,7 +39,9 @@ class CovenantMonitor(gl.Contract):
         self.agreement_count = u256(0)
 
     # ---------------------------------------------------------------
-    # Create + lock an agreement
+    # Create + lock an agreement — PERMISSIONLESS. Creating an
+    # agreement moves no funds; parties only commit by locking on the
+    # vault, so anyone may register terms.
     # ---------------------------------------------------------------
     @gl.public.write
     def create_agreement(
@@ -80,6 +82,8 @@ class CovenantMonitor(gl.Contract):
     #   1. strict_eq web fetch of the live locked endpoint
     #   2. prompt_non_comparative judges the six checks; the inner fn
     #      RETURNS the prompt string (it does NOT call the LLM itself)
+    # PERMISSIONLESS — anyone may trigger a measurement; the verdict
+    # comes from validator consensus, not from the caller.
     # ---------------------------------------------------------------
     @gl.public.write
     def run_checkpoint(self, agreement_id: str) -> str:
@@ -229,9 +233,18 @@ Return ONLY one JSON object with these keys: tier (satisfied|minor|material|crit
         }
 
     @gl.public.view
+    def get_checkpoint_tier(self, agreement_id: str, index: u256) -> str:
+        key = agreement_id + ":" + str(int(index))
+        return self.cp_tier.get(key, "")
+
+    @gl.public.view
     def get_checkpoint_count(self, agreement_id: str) -> u256:
         return self.cp_count.get(agreement_id, u256(0))
 
     @gl.public.view
     def get_agreement_count(self) -> u256:
         return self.agreement_count
+
+    @gl.public.view
+    def get_exists(self, agreement_id: str) -> bool:
+        return self.ag_exists.get(agreement_id, False)
