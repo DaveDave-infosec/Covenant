@@ -32,13 +32,19 @@ const LIFECYCLE = [
     key: "checkpoint",
     name: "Checkpoint",
     actor: "anyone · validators judge",
-    desc: "The monitor fetches the live service and GenLayer validators independently judge six checks — usability, latency, schema, freshness, function, exceptions — reaching consensus on one health verdict.",
+    desc: "The monitor fetches the live service and GenLayer validators judge six checks — usability, latency, schema, freshness, function, exceptions — then produce two readings of that same evidence, one strict and one lenient.",
+  },
+  {
+    key: "contest",
+    name: "Agree or contest",
+    actor: "decided by the evidence",
+    desc: "If both readings reach the same tier, the checkpoint counts. If they split, it is marked contested: recorded in full, but it does not satisfy the agreement. Ambiguous evidence buys time, not a payout.",
   },
   {
     key: "tally",
     name: "Tally",
     actor: "on-chain, deterministic",
-    desc: "Once the agreed number of checkpoints has run, the recorded verdicts resolve to one outcome. A single critical checkpoint sinks the whole agreement — one catastrophic failure dominates.",
+    desc: "Once enough uncontested checkpoints have run, the recorded verdicts resolve to one outcome. A single critical checkpoint sinks the whole agreement — one catastrophic failure dominates.",
   },
   {
     key: "settle",
@@ -157,13 +163,14 @@ export default function Marketing() {
           <div className="mk-hero-copy">
             <div className="eyebrow" style={{ marginBottom: 14 }}>Consensus-enforced settlement</div>
             <h1 className="mk-hero-title">
-              When validators disagree,<br />that disagreement is the record.
+              When the evidence is arguable,<br />the money waits.
             </h1>
             <p className="muted mk-hero-sub">
-              Covenant settles API service-level agreements by consensus. Validators fetch the live
-              service and judge each checkpoint — and when they split on a verdict, the minority
-              reasoning is preserved on-chain, not discarded. The money follows the majority. The
-              dissent stays visible.
+              Covenant settles API service-level agreements by consensus. Every checkpoint is judged
+              twice over the same fetched evidence — once strictly, once leniently — and both
+              readings are written on-chain. When they agree, settlement proceeds. When they
+              disagree, that checkpoint does not count toward the agreement, and the contract waits
+              for clearer evidence before moving anyone's money.
             </p>
             <div className="mk-hero-cta">
               <Link to="/app" className="btn btn-primary">Launch the dApp →</Link>
@@ -193,7 +200,7 @@ export default function Marketing() {
         <section id="how" className="mk-section">
           <div className="mk-section-head">
             <div className="eyebrow" style={{ marginBottom: 12 }}>How it works</div>
-            <h2 className="mk-section-title">Five stages from promise to payout.</h2>
+            <h2 className="mk-section-title">Six stages from promise to payout.</h2>
             <p className="muted mk-section-lead">
               An agreement isn't a document Covenant trusts — it's a sequence the contracts enforce.
               Nobody is asked to report what happened; the service is measured directly, and the
@@ -221,58 +228,60 @@ export default function Marketing() {
         <section id="dissent" className="mk-section">
           <div className="mk-section-head">
             <div className="eyebrow" style={{ marginBottom: 12 }}>The GenLayer-native part</div>
-            <h2 className="mk-section-title">Disagreement isn't noise. It's the finding.</h2>
+            <h2 className="mk-section-title">Disagreement isn't noise. It's a reason to wait.</h2>
             <p className="muted mk-section-lead">
-              A single model, asked a subjective question, gives you one confident answer and hides
-              its own doubt. GenLayer runs several validators independently — and when they split on
-              a verdict, Covenant records the split. The majority moves the money. The minority
-              reasoning is written to the chain, permanently, where anyone can read what the dissent
-              actually argued.
+              A single model, asked a subjective question, returns one confident answer and hides its
+              own doubt. Covenant asks the question twice. Each checkpoint is judged strictly, by the
+              literal terms, and leniently, by what was substantively delivered. Both readings are
+              validated by consensus and stored on-chain. Where they agree, the evidence is clear and
+              settlement proceeds. Where they split, the contract treats the evidence as unresolved:
+              the checkpoint is recorded, but it does not satisfy the agreement, and no money moves
+              until another checkpoint produces a reading both standards share.
             </p>
           </div>
 
           <div className="mk-dissent">
             <div className="mk-dissent-head">
               <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span className="mk-chip mk-chip-material">checkpoint · material</span>
+                <span className="mk-chip mk-chip-material">contested · does not count</span>
                 <span className="mono" style={{ fontSize: 12, color: "var(--text-dim)" }}>
-                  GitHub Repo API — freshness check
+                  Todo Reference API — schema check · vault #2, checkpoint 01
                 </span>
               </div>
               <span className="mono" style={{ fontSize: 11, color: "var(--text-faint)" }}>
-                validators split 3 – 2
+                read live from the contract
               </span>
             </div>
 
             <div className="mk-dissent-body">
               <div className="mk-verdict mk-verdict-majority">
-                <div className="mk-verdict-tag mono">Majority · 3 validators</div>
+                <div className="mk-verdict-tag mono">Strict reading</div>
                 <div className="mk-verdict-tier">Material breach</div>
                 <p className="muted mk-verdict-reason">
-                  The <span className="mono">updated_at</span> timestamp was three weeks stale against
-                  a freshness rule requiring recent activity. The endpoint returned valid structure,
-                  but the data no longer reflected the live repository — a meaningful breach of what
-                  was promised.
+                  The response lacks the required <span className="mono">priority</span> field,
+                  violating the schema requirement, and the exception clause applies, indicating a
+                  material breach.
                 </p>
-                <div className="mk-verdict-effect mono">→ this verdict moved the money</div>
+                <div className="mk-verdict-effect mono">→ the tier of record</div>
               </div>
 
               <div className="mk-verdict mk-verdict-minority">
-                <div className="mk-verdict-tag mono">Minority · 2 validators</div>
-                <div className="mk-verdict-tier">Minor degradation</div>
+                <div className="mk-verdict-tag mono">Lenient reading</div>
+                <div className="mk-verdict-tier">Satisfied</div>
                 <p className="muted mk-verdict-reason">
-                  A stale timestamp on a low-traffic repository is expected, not a failure. The core
-                  function — returning correct repository metadata — still worked. The agreed
-                  exceptions arguably cover quiet periods. Degraded, but not a material breach.
+                  Although <span className="mono">priority</span> is missing, the contract treats
+                  optional metadata as excusable, and the core todo data is present, so the service
+                  meets the promised functionality.
                 </p>
                 <div className="mk-verdict-effect mono">→ preserved on-chain, not discarded</div>
               </div>
             </div>
 
             <div className="mk-dissent-foot mono">
-              Both readings are stored on the monitor contract. Settlement followed the majority —
-              but the minority argument survives as part of the permanent record, readable by either
-              party or any reviewer.
+              Both readings, and the note saying where they split, are stored on the monitor
+              contract. Because they disagree, this checkpoint does not satisfy the agreement:
+              settlement stayed blocked and the funds stayed locked until clearer evidence arrived.
+              This is a real checkpoint, readable now at get_checkpoint(2, 0).
             </div>
           </div>
         </section>
@@ -379,7 +388,7 @@ const MK_CSS = `
 .mk-section-head{max-width:620px;margin-bottom:44px;}
 .mk-section-title{font-family:var(--font-display);font-weight:500;font-size:30px;line-height:1.22;letter-spacing:-0.01em;color:var(--text-bright);margin-bottom:16px;}
 .mk-section-lead{font-size:15.5px;line-height:1.7;}
-.mk-flow{display:grid;grid-template-columns:repeat(5,1fr);gap:0;}
+.mk-flow{display:grid;grid-template-columns:repeat(6,1fr);gap:0;}
 .mk-flow-step{display:flex;flex-direction:column;}
 .mk-flow-rail{display:flex;align-items:center;height:40px;margin-bottom:16px;position:relative;}
 .mk-flow-node{
@@ -447,7 +456,7 @@ const MK_CSS = `
 @media (max-width:900px){
   .mk-hero{grid-template-columns:1fr;gap:40px;padding:24px 0 48px;}
   .mk-hero-title{font-size:32px;}
-  .mk-flow{grid-template-columns:1fr;gap:24px;}
+  .mk-flow{grid-template-columns:1fr 1fr;gap:24px;}
   .mk-flow-rail{margin-bottom:12px;}
   .mk-flow-line{display:none;}
   .mk-section-title{font-size:24px;}

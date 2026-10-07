@@ -5,13 +5,11 @@ import json
 
 
 class CovenantMonitor(gl.Contract):
-    # ---- agreement identity + parties ----
     agreement_count: u256
     ag_provider: TreeMap[str, str]
     ag_customer: TreeMap[str, str]
     ag_exists: TreeMap[str, bool]
 
-    # ---- locked SLA terms (flat parallel TreeMaps, keyed by agreement id) ----
     ag_endpoint: TreeMap[str, str]
     ag_service_name: TreeMap[str, str]
     ag_latency_ms: TreeMap[str, u256]
@@ -21,8 +19,6 @@ class CovenantMonitor(gl.Contract):
     ag_exception_desc: TreeMap[str, str]
     ag_compared_fields: TreeMap[str, str]
 
-    # ---- checkpoint verdict history (flat parallel TreeMaps) ----
-    # keyed by "<agreement_id>:<checkpoint_index>"
     cp_count: TreeMap[str, u256]
     cp_tier: TreeMap[str, str]
     cp_usability: TreeMap[str, str]
@@ -31,18 +27,20 @@ class CovenantMonitor(gl.Contract):
     cp_freshness: TreeMap[str, str]
     cp_functional: TreeMap[str, str]
     cp_exception: TreeMap[str, str]
-    cp_reasoning: TreeMap[str, str]
-    cp_minority: TreeMap[str, str]
-    cp_latency_ms: TreeMap[str, str]
+
+    cp_strict_tier: TreeMap[str, str]
+    cp_strict_reason: TreeMap[str, str]
+    cp_lenient_tier: TreeMap[str, str]
+    cp_lenient_reason: TreeMap[str, str]
+    cp_contested: TreeMap[str, bool]
+    cp_divergence: TreeMap[str, str]
+
+    ag_contested_count: TreeMap[str, u256]
+    ag_uncontested_count: TreeMap[str, u256]
 
     def __init__(self):
         self.agreement_count = u256(0)
 
-    # ---------------------------------------------------------------
-    # Create + lock an agreement — PERMISSIONLESS. Creating an
-    # agreement moves no funds; parties only commit by locking on the
-    # vault, so anyone may register terms.
-    # ---------------------------------------------------------------
     @gl.public.write
     def create_agreement(
         self,
@@ -73,24 +71,16 @@ class CovenantMonitor(gl.Contract):
         self.ag_compared_fields[aid] = compared_fields
         self.ag_exists[aid] = True
         self.cp_count[aid] = u256(0)
+        self.ag_contested_count[aid] = u256(0)
+        self.ag_uncontested_count[aid] = u256(0)
 
         return aid
 
-    # ---------------------------------------------------------------
-    # Run one checkpoint — INDEPENDENT consensus (Architecture A).
-    # Two-stage, matching the proven pattern:
-    #   1. strict_eq web fetch of the live locked endpoint
-    #   2. prompt_non_comparative judges the six checks; the inner fn
-    #      RETURNS the prompt string (it does NOT call the LLM itself)
-    # PERMISSIONLESS — anyone may trigger a measurement; the verdict
-    # comes from validator consensus, not from the caller.
-    # ---------------------------------------------------------------
     @gl.public.write
     def run_checkpoint(self, agreement_id: str) -> str:
         aid = agreement_id
         assert self.ag_exists.get(aid, False), "agreement does not exist"
 
-        # copy locked terms to locals (self not accessible in non-det block)
         endpoint = self.ag_endpoint[aid]
         service_name = self.ag_service_name[aid]
         latency_threshold = int(self.ag_latency_ms[aid])
@@ -99,7 +89,6 @@ class CovenantMonitor(gl.Contract):
         function_desc = self.ag_function_desc[aid]
         exception_desc = self.ag_exception_desc[aid]
 
-        # --- Stage 1: fetch the live endpoint (strict_eq — page text is stable) ---
         def fetch_endpoint() -> str:
             response = gl.nondet.web.get(endpoint)
             body = response.body.decode("utf-8", errors="ignore")
@@ -109,9 +98,8 @@ class CovenantMonitor(gl.Contract):
 
         body = gl.eq_principle.strict_eq(fetch_endpoint)
 
-        # --- Stage 2: judge the six checks (prompt_non_comparative) ---
         def build_prompt() -> str:
-            return f"""You are an independent service-level auditor judging ONE checkpoint of a live API service. You have fetched the service yourself; judge only what you see, in context. Do not trust any party's claims — only this fetched response.
+            return f"""You are auditing ONE checkpoint of a live API service against an agreed service-level contract. You have fetched the service yourself. Judge only the evidence below.
 
 SERVICE: {service_name}
 ENDPOINT: {endpoint}
@@ -121,40 +109,51 @@ AGREED TERMS:
 - Required response fields: {required_fields}
 - Data freshness rule: {freshness_desc}
 - Core function the endpoint must perform: {function_desc}
-- Agreed exceptions (maintenance / usage limits — provider NOT responsible if these apply): {exception_desc}
+- Agreed exceptions (provider NOT responsible if these apply): {exception_desc}
 
 LIVE RESPONSE BODY (first 2000 chars):
 {body}
 
-Judge these SIX checks. For each, decide "pass" or "fail":
-1. usability — did the endpoint return valid, USABLE data (not a 200 with empty/garbage body)?
-2. latency — assume latency is acceptable UNLESS the body itself indicates a timeout or slow-response error; if the body is a normal successful response, mark "pass".
-3. schema — are the required fields present and correctly structured (no breaking change)?
-4. freshness — is the data current per the freshness rule?
-5. functional — did the endpoint actually perform its documented core function?
-6. exception — does an agreed exception apply that excuses any failure? "pass" means NO exception applies (normal operation); "fail" means an exception DOES apply and the provider is not responsible.
+First judge these SIX checks, deciding "pass" or "fail" for each:
+1. usability - did the endpoint return valid, USABLE data?
+2. latency - assume acceptable UNLESS the body indicates a timeout or slow-response error.
+3. schema - are the required fields present and correctly structured?
+4. freshness - is the data current per the freshness rule?
+5. functional - did the endpoint perform its documented core function?
+6. exception - "pass" means NO agreed exception applies; "fail" means one DOES apply and excuses the provider.
 
-Then assign ONE overall health tier:
-- "satisfied" — all material checks pass, service healthy
-- "minor" — small degradation, service still usable
-- "material" — meaningful breach (broken schema, unusable response, core function impaired)
-- "critical" — service effectively down or completely broken
+Then produce TWO INDEPENDENT READINGS of this same evidence. These are not a verdict and a rebuttal. They are two good-faith auditors applying the contract with different but defensible standards. Reason each one through on its own terms.
 
-If an agreed exception applies, lean toward "satisfied" for the excused incident.
+STRICT READING: hold the service tightly to the literal agreed terms. Any requirement not clearly met counts against the provider. Give no benefit of the doubt for ambiguity.
 
-Return ONLY one JSON object with these keys: tier (satisfied|minor|material|critical), usability (pass|fail), latency (pass|fail), schema (pass|fail), freshness (pass|fail), functional (pass|fail), exception (pass|fail), reasoning (1-2 sentences grounded in the actual response body), minority_note (one sentence giving the strongest argument for the opposite verdict, or an empty string)."""
+LENIENT READING: judge whether the service substantively delivered what the customer was promised. Tolerate immaterial deviations. Give the benefit of the doubt where the contract is ambiguous or where an agreed exception plausibly applies.
+
+Assign each reading ONE tier:
+- "satisfied" - service healthy, material checks pass
+- "minor" - small degradation, still usable
+- "material" - meaningful breach (broken schema, unusable response, impaired function)
+- "critical" - service effectively down
+
+The two readings may land on the SAME tier. If the evidence is clear, they should. Only diverge when the evidence genuinely supports more than one conclusion. Do not manufacture disagreement.
+
+Return ONLY one JSON object with these keys: usability, latency, schema, freshness, functional, exception (each exactly "pass" or "fail"), strict_tier, strict_reasoning, lenient_tier, lenient_reasoning, divergence_note. strict_tier and lenient_tier are each one of satisfied|minor|material|critical. strict_reasoning and lenient_reasoning are 1-2 sentences each, grounded in the actual response body. divergence_note states in one sentence what the two readings disagreed about, or is an empty string if they agree."""
 
         task = (
-            "Judge the six service-level checks for this checkpoint against the "
-            "fetched live response body and the agreed terms, then output the "
-            "verdict as one JSON object."
+            "Judge the six service-level checks against the fetched response body, "
+            "then produce two independent readings of the same evidence (a strict "
+            "reading and a lenient reading), each with its own tier and reasoning, "
+            "as one JSON object."
         )
         criteria_check = (
-            "The response is exactly one valid JSON object with keys tier, "
-            "usability, latency, schema, freshness, functional, exception, "
-            "reasoning, minority_note. tier is one of satisfied, minor, material, "
-            "critical. Each of the six checks is exactly pass or fail. reasoning "
-            "is a non-empty string grounded in the actual response body."
+            "The response is exactly one valid JSON object with keys usability, "
+            "latency, schema, freshness, functional, exception, strict_tier, "
+            "strict_reasoning, lenient_tier, lenient_reasoning, divergence_note. "
+            "Each of the six checks is exactly pass or fail. strict_tier and "
+            "lenient_tier are each one of satisfied, minor, material, critical. "
+            "strict_reasoning and lenient_reasoning are non-empty strings grounded "
+            "in the actual response body, and each must justify its own tier on its "
+            "own terms. If strict_tier and lenient_tier differ, divergence_note is "
+            "non-empty and names what the readings disagreed about."
         )
 
         raw = gl.eq_principle.prompt_non_comparative(
@@ -163,40 +162,51 @@ Return ONLY one JSON object with these keys: tier (satisfied|minor|material|crit
             criteria=criteria_check,
         )
 
-        parsed = json.loads(raw)
+        start = raw.find("{")
+        end = raw.rfind("}")
+        assert start >= 0 and end > start, "verdict was not readable JSON"
+        parsed = json.loads(raw[start:end + 1])
 
-        tier = str(parsed["tier"])
-        usability = str(parsed["usability"])
-        latency = str(parsed["latency"])
-        schema = str(parsed["schema"])
-        freshness = str(parsed["freshness"])
-        functional = str(parsed["functional"])
-        exception = str(parsed["exception"])
-        reasoning = str(parsed["reasoning"])
-        minority = str(parsed["minority_note"])
+        def tier_of(value: str) -> str:
+            t = str(value).lower().strip()
+            if t in ("satisfied", "minor", "material", "critical"):
+                return t
+            return "material"
 
-        # store the verdict in flat parallel TreeMaps
+        strict_tier = tier_of(parsed["strict_tier"])
+        lenient_tier = tier_of(parsed["lenient_tier"])
+        strict_reason = str(parsed["strict_reasoning"])
+        lenient_reason = str(parsed["lenient_reasoning"])
+        divergence = str(parsed.get("divergence_note", ""))
+
+        contested = strict_tier != lenient_tier
+
         cp_idx = int(self.cp_count.get(aid, u256(0)))
         key = aid + ":" + str(cp_idx)
 
-        self.cp_tier[key] = tier
-        self.cp_usability[key] = usability
-        self.cp_latency[key] = latency
-        self.cp_schema[key] = schema
-        self.cp_freshness[key] = freshness
-        self.cp_functional[key] = functional
-        self.cp_exception[key] = exception
-        self.cp_reasoning[key] = reasoning
-        self.cp_minority[key] = minority
-        self.cp_latency_ms[key] = "0"
+        self.cp_tier[key] = strict_tier
+        self.cp_usability[key] = str(parsed["usability"])
+        self.cp_latency[key] = str(parsed["latency"])
+        self.cp_schema[key] = str(parsed["schema"])
+        self.cp_freshness[key] = str(parsed["freshness"])
+        self.cp_functional[key] = str(parsed["functional"])
+        self.cp_exception[key] = str(parsed["exception"])
+
+        self.cp_strict_tier[key] = strict_tier
+        self.cp_strict_reason[key] = strict_reason
+        self.cp_lenient_tier[key] = lenient_tier
+        self.cp_lenient_reason[key] = lenient_reason
+        self.cp_contested[key] = contested
+        self.cp_divergence[key] = divergence if contested else ""
 
         self.cp_count[aid] = u256(cp_idx + 1)
+        if contested:
+            self.ag_contested_count[aid] = u256(int(self.ag_contested_count.get(aid, u256(0))) + 1)
+        else:
+            self.ag_uncontested_count[aid] = u256(int(self.ag_uncontested_count.get(aid, u256(0))) + 1)
 
-        return tier
+        return strict_tier
 
-    # ---------------------------------------------------------------
-    # Views
-    # ---------------------------------------------------------------
     @gl.public.view
     def get_agreement(self, agreement_id: str) -> dict:
         aid = agreement_id
@@ -214,6 +224,8 @@ Return ONLY one JSON object with these keys: tier (satisfied|minor|material|crit
             "exception_desc": self.ag_exception_desc[aid],
             "compared_fields": self.ag_compared_fields[aid],
             "checkpoint_count": str(self.cp_count.get(aid, u256(0))),
+            "contested_count": str(self.ag_contested_count.get(aid, u256(0))),
+            "uncontested_count": str(self.ag_uncontested_count.get(aid, u256(0))),
         }
 
     @gl.public.view
@@ -227,15 +239,31 @@ Return ONLY one JSON object with these keys: tier (satisfied|minor|material|crit
             "freshness": self.cp_freshness.get(key, ""),
             "functional": self.cp_functional.get(key, ""),
             "exception": self.cp_exception.get(key, ""),
-            "reasoning": self.cp_reasoning.get(key, ""),
-            "minority_note": self.cp_minority.get(key, ""),
-            "observed_latency_ms": self.cp_latency_ms.get(key, ""),
+            "strict_tier": self.cp_strict_tier.get(key, ""),
+            "strict_reasoning": self.cp_strict_reason.get(key, ""),
+            "lenient_tier": self.cp_lenient_tier.get(key, ""),
+            "lenient_reasoning": self.cp_lenient_reason.get(key, ""),
+            "contested": self.cp_contested.get(key, False),
+            "divergence_note": self.cp_divergence.get(key, ""),
         }
 
     @gl.public.view
     def get_checkpoint_tier(self, agreement_id: str, index: u256) -> str:
         key = agreement_id + ":" + str(int(index))
         return self.cp_tier.get(key, "")
+
+    @gl.public.view
+    def is_checkpoint_contested(self, agreement_id: str, index: u256) -> bool:
+        key = agreement_id + ":" + str(int(index))
+        return self.cp_contested.get(key, False)
+
+    @gl.public.view
+    def get_uncontested_count(self, agreement_id: str) -> u256:
+        return self.ag_uncontested_count.get(agreement_id, u256(0))
+
+    @gl.public.view
+    def get_contested_count(self, agreement_id: str) -> u256:
+        return self.ag_contested_count.get(agreement_id, u256(0))
 
     @gl.public.view
     def get_checkpoint_count(self, agreement_id: str) -> u256:

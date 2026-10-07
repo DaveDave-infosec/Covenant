@@ -1,78 +1,98 @@
-# Covenant — Lifecycle Test (on-chain evidence)
+# Covenant — tests and on-chain evidence
 
-This documents the full agreement lifecycle executed against the deployed V2
-contracts on the GenLayer Studio Network, ending in **permissionless settlement
-by a wallet that is neither party nor the deployer**.
+Two layers of verification, both runnable.
 
-Every step below is a real, finalized transaction. Click any hash to verify it
-on the GenLayer Studio explorer. The runnable version of this flow is in
-[`test_lifecycle.py`](./test_lifecycle.py).
+| File | What it proves | Needs |
+|------|----------------|-------|
+| `test_monitor.py` | The monitor's real `run_checkpoint` path: two readings, contested detection, counters | nothing |
+| `test_vault.py` | The vault's real settlement path: the contested gate, permissionless settle, conservation | nothing |
+| `test_onchain.py` | The same properties on the live contracts, against real settled and blocked agreements | network access |
 
-## Deployed contracts (Studio Network, chain 61999)
+```bash
+pip install genlayer-test==0.29.2
+python -m pytest tests/test_monitor.py tests/test_vault.py -q   # 44 passed
+python -m pytest tests/test_onchain.py -q                       # reads the live chain
+```
+
+The first run downloads the GenLayer SDK (around 200 MB) and takes a few
+minutes with no output. Later runs finish in seconds.
+
+## Deployed contracts
+
+GenLayer Studio Network, chain 61999.
 
 | Contract | Address |
 |----------|---------|
-| CovenantMonitor | `0x906Dd97DEd78B3B9FB198a5227A831b70f8b1180` |
-| CovenantVault | `0xd0cED4dd1Fb3605686d057c883A4DDd1bE81b71d` |
+| CovenantMonitor | `0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728` |
+| CovenantVault | `0x6033717CC68BedfbC6f6438383e829d52608c7d9` |
 
-## How settlement authenticates verdicts
+The sources in `contracts/` are the sources deployed at those addresses.
 
-`CovenantVault.settle()` does not accept a verdict from its caller. It reads the
-recorded tiers directly from the monitor contract, cross-contract:
+## What the tests actually run
 
-```python
-mon = gl.get_contract_at(self.monitor)
-...
-t = str(mon.view().get_checkpoint_tier(monitor_id, u256(i))).lower().strip()
-```
+The contract logic tests are not a reimplementation. They load
+`contracts/covenant_monitor.py` and `contracts/covenant_vault.py` into an
+in-process GenLayer VM and call them.
 
-There is no `record_checkpoint` method and no owner-supplied tier anywhere in the
-vault — the earlier relay pattern was removed. The verdict a settlement acts on
-is always the one the monitor's validators reached consensus on. See
-[`../contracts/covenant_vault.py`](../contracts/covenant_vault.py), function
-`settle`.
+Two parts of a checkpoint are non-deterministic, so they are supplied by the
+test: the live web fetch, and the validator verdict. Everything between those
+two points is the contract's own code, including prompt construction, JSON
+extraction, tier normalisation, contested detection and all the settlement
+arithmetic.
 
-## The permissionless-settle proof
+The GenLayer SDK permits only one contract class per process, so the monitor
+and the vault are tested in separate modules. Where the vault reaches the
+monitor through `gl.get_contract_at`, the call is answered from an explicit
+test-controlled monitor state. That is what allows a test to place the monitor
+in a state, such as "three checkpoints, two of them contested", that would
+otherwise take a long sequence of live transactions to reach.
 
-The clearest single piece of evidence: an agreement settled by a **bystander
-wallet** — not the provider, not the customer, not the deployer.
+## The property that matters
 
-- **Settling wallet:** `0xc47F4102428E65E671379453F39b26eb744d96C9`
-  (a party to nothing, not the deployer)
-- **Settlement transaction:**
-  [`0x29d881888c25f9e499e7728ce32979793372f2e6dc2a13a0622c65cd7d03099e`](https://explorer-studio.genlayer.com/tx/0x29d881888c25f9e499e7728ce32979793372f2e6dc2a13a0622c65cd7d03099e)
-- **Result:** `Execution SUCCESS`, return value `"satisfied"`, `FINALIZED`,
-  consensus Accepted across validators.
+A checkpoint is **contested** when a strict reading and a lenient reading of
+the same fetched evidence reach different tiers. A contested checkpoint is
+recorded and counted in the tally, but it does **not** satisfy
+`checkpoints_required`. Settlement waits for evidence that is not ambiguous.
 
-The vault has no owner-only settlement path. Anyone can settle once the agreed
-checkpoint count is met — the contract enforces the agreement's terms, not the
-caller's identity.
+Both directions are covered:
 
-## Outcomes proven on-chain
+- `test_contested_checkpoint_does_not_satisfy_the_requirement` — settlement
+  reverts with `not enough uncontested checkpoints; contested evidence
+  requires another checkpoint`
+- `test_an_uncontested_checkpoint_releases_the_gate` — the same agreement
+  settles once clear evidence arrives
 
-All four settlement tiers were exercised end-to-end, with exact value
-conservation (money out always equals money in) each time:
+## On-chain evidence
 
-| Tier | Scenario | Distribution (payment / bond) |
-|------|----------|-------------------------------|
-| **satisfied** | Healthy static endpoint | Provider paid in full (minus 1% fee), bond returned |
-| **minor** | Slight degradation | Small customer credit, bond returned |
-| **material** | Missing required fields | Customer compensated 20%, half the bond slashed |
-| **critical** | Dead / 404 endpoint | Full payment refunded, entire bond slashed |
+`test_onchain.py` reads two real agreements on the deployed vault.
 
-Example — critical settlement: payment 4,000 + bond 800 in; customer received
-4,800, provider 0, bond-to-provider 0. Conservation exact.
+**Vault agreement #2 — blocked.** Bound to a monitor agreement whose terms are
+deliberately ambiguous: a required field the endpoint does not return, against
+an exception clause that excuses absent upstream metadata. Both checkpoints run
+against it were contested, so it remains `active` with its uncontested count
+below its requirement. A settle attempt failed with the assertion above.
 
-## Lifecycle summary
+**Vault agreement #1 — released.** Bound to a monitor agreement with clear
+terms and a static endpoint. Its checkpoint was uncontested, the requirement
+was met, and it settled `satisfied`.
 
-1. **Create** — SLA terms locked on the monitor; the vault cross-contract-verifies
-   the parties before binding. Permissionless.
-2. **Fund & lock** — provider stakes the bond, customer locks the payment. Held by
-   the vault; untouchable until settlement.
-3. **Checkpoint** — the monitor fetches the live service; GenLayer validators reach
-   consensus on one health verdict. Permissionless to trigger; the caller cannot
-   influence the result.
-4. **Settle** — permissionless once the agreed checkpoint count is met. The vault
-   reads verdicts from the monitor cross-contract and distributes by fixed
-   arithmetic. Reverts unless the vault can fully fund the payout (conservation
-   enforced as a precondition).
+The same mechanism produced both outcomes. The difference was the evidence.
+
+## Trust properties asserted
+
+- Creation, checkpoint execution and settlement are permissionless. The
+  bystander settlement test asserts the settler is neither party nor the fee
+  wallet.
+- Settlement consumes verdicts read from the monitor cross-contract. The vault
+  has no method that accepts a tier from its caller.
+- Value is conserved for every outcome tier, and settlement reverts rather than
+  paying out from a vault that cannot fund it.
+- The deployer holds no authority. It is the fee beneficiary and nothing else.
+
+## A note on the tally
+
+The outcome rule escalates when a fault tier covers more than half a run. One
+minor checkpoint out of one settles as `material`; one material out of one
+settles as `critical`. Adding clean evidence removes the escalation. This is
+intentional, and `test_the_tally_escalates_when_a_fault_tier_dominates`
+documents it.

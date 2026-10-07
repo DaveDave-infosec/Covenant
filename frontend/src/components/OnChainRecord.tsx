@@ -14,10 +14,17 @@ import {
   VAULT_CONTRACT_ADDRESS,
 } from "../lib/constants";
 
+// A checkpoint carries two independently reasoned readings of the same
+// evidence. When their tiers differ the checkpoint is contested: it is
+// recorded, but it does not satisfy the agreement's requirement.
 interface CheckpointDetail {
   tier: string;
-  reasoning: string;
-  minority: string;
+  strictTier: string;
+  strictReasoning: string;
+  lenientTier: string;
+  lenientReasoning: string;
+  contested: boolean;
+  divergenceNote: string;
   checks: { label: string; value: string }[];
 }
 
@@ -111,8 +118,12 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
         checkpoints: cps.map((cp) => ({ tier: normTier(cp.tier) })),
         details: cps.map((cp) => ({
           tier: cp.tier,
-          reasoning: cp.reasoning,
-          minority: cp.minority_note,
+          strictTier: cp.strict_tier,
+          strictReasoning: cp.strict_reasoning,
+          lenientTier: cp.lenient_tier,
+          lenientReasoning: cp.lenient_reasoning,
+          contested: Boolean(cp.contested),
+          divergenceNote: cp.divergence_note || "",
           checks: [
             { label: "usability", value: cp.usability },
             { label: "latency", value: cp.latency },
@@ -124,8 +135,8 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
         })),
       };
     }
-    // v2: every vault stores its monitor_id, so an unpaired entry is an
-    // error case only — no vault-side tier fallback exists. Show nothing.
+    // Every vault stores its monitor_id, so an unpaired entry is an error
+    // case only. There is no vault-side fallback to read.
     return { checkpoints: [], details: [] };
   }
 
@@ -148,6 +159,17 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
     return entry.monitor?.checkpoint_count ?? "0";
   }
 
+  // Count contested checkpoints the SAME way the vault's settle gate does:
+  // only those since activation. Checkpoints that ran before both sides
+  // locked sit behind the snapshot and do not affect settlement, so showing
+  // the monitor's lifetime total here would contradict the waiting banner.
+  function contestedCountOf(entry: RecordEntry): number {
+    if (entry.progress) {
+      return Number(entry.progress.contested) || 0;
+    }
+    return Number(entry.monitor?.contested_count ?? "0") || 0;
+  }
+
   function settlementOf(entry: RecordEntry): StripSettlement | null {
     const s = entry.settlement;
     if (!s || (s.status !== "settled" && entry.vault.status !== "settled")) return null;
@@ -168,6 +190,25 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
     return <span className={"rec-status rec-" + status}>{status}</span>;
   }
 
+  // An active agreement whose evidence keeps splitting is waiting, and the
+  // record says so rather than leaving the row looking merely idle.
+  function waitingBanner(entry: RecordEntry) {
+    const p = entry.progress;
+    if (!p || entry.vault.status !== "active" || p.ready) return null;
+    const contested = Number(p.contested) || 0;
+    if (contested < 1) return null;
+    return (
+      <div className="rec-waiting">
+        <span className="rec-waiting-dot" />
+        <span>
+          Waiting on uncontested evidence — {p.uncontested} of {p.required} so far,
+          with {contested} checkpoint{contested === 1 ? "" : "s"} contested.
+          Settlement is blocked until the readings agree.
+        </span>
+      </div>
+    );
+  }
+
   function renderRow(entry: RecordEntry) {
     const open = expandedId === entry.vaultId;
     const role = roleOf(entry);
@@ -175,6 +216,7 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
     const isDetLoading = detailLoading === entry.vaultId;
     const settlement = settlementOf(entry);
     const serviceName = entry.monitor?.service_name || `Agreement #${entry.vaultId}`;
+    const contestedCount = contestedCountOf(entry);
 
     return (
       <div key={entry.vaultId} className="rec-row">
@@ -186,6 +228,11 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
               vault #{entry.vaultId}
               {entry.monitorId ? ` · monitor #${entry.monitorId}` : " · unpaired"}
             </span>
+            {contestedCount > 0 && (
+              <span className="rec-contested-chip" title="Checkpoints whose two readings disagreed">
+                {contestedCount} contested
+              </span>
+            )}
             {role && (
               <span className="rec-role">
                 you · {role === "both" ? "both parties" : role}
@@ -205,6 +252,8 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
 
         {open && (
           <div className="rec-body">
+            {waitingBanner(entry)}
+
             <CovenantStrip
               serviceName={serviceName}
               caseId={entry.vaultId}
@@ -226,7 +275,9 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
 
             {det && det.details.length > 0 && (
               <div style={{ marginTop: 14 }}>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>Validator reasoning · from consensus</div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>
+                  Two readings per checkpoint · from consensus
+                </div>
                 {det.details.map((d, i) => (
                   <ReasoningDrawer key={i} detail={d} index={i} last={i === det.details.length - 1} />
                 ))}
@@ -384,11 +435,16 @@ function ReasoningDrawer({ detail, index, last }: { detail: CheckpointDetail; in
   const [open, setOpen] = useState(false);
   const d = detail;
   return (
-    <div className="cp-detail" style={{ marginBottom: last ? 0 : 10 }}>
+    <div className={"cp-detail" + (d.contested ? " contested" : "")} style={{ marginBottom: last ? 0 : 10 }}>
       <button className="cp-detail-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="row" style={{ gap: 10, flexWrap: "wrap" }}>
           <span className={"tier-chip tier-" + d.tier}>{d.tier}</span>
           <span className="mono faint" style={{ fontSize: 11 }}>checkpoint {String(index + 1).padStart(2, "0")}</span>
+          {d.contested ? (
+            <span className="cp-contested-tag">contested · does not count</span>
+          ) : (
+            <span className="cp-agreed-tag">both readings agree</span>
+          )}
         </span>
         <span className="cp-chevron" style={{ transform: open ? "rotate(90deg)" : "none" }}>›</span>
       </button>
@@ -404,21 +460,46 @@ function ReasoningDrawer({ detail, index, last }: { detail: CheckpointDetail; in
             ))}
           </div>
 
-          <div className="reason-block">
-            <div className="label" style={{ marginBottom: 6 }}>Reasoning</div>
-            <p className="mono" style={{ fontSize: 12.5, lineHeight: 1.65, color: "var(--text)" }}>{d.reasoning}</p>
-          </div>
-
-          {d.minority && (
-            <div className="reason-block" style={{ marginTop: 10 }}>
-              <div className="label" style={{ marginBottom: 6 }}>Minority note</div>
-              <p className="mono" style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-dim)" }}>{d.minority}</p>
+          {d.contested && d.divergenceNote && (
+            <div className="divergence-block">
+              <div className="label" style={{ marginBottom: 6 }}>Where the readings split</div>
+              <p className="mono" style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--text)" }}>
+                {d.divergenceNote}
+              </p>
             </div>
           )}
+
+          <div className="readings">
+            <div className="reading">
+              <div className="reading-head">
+                <span className="reading-label">Strict reading</span>
+                <span className={"tier-chip tier-" + normalizeForChip(d.strictTier)}>{d.strictTier}</span>
+              </div>
+              <p className="mono reading-text">{d.strictReasoning}</p>
+              <div className="reading-foot mono">tier of record</div>
+            </div>
+
+            <div className="reading">
+              <div className="reading-head">
+                <span className="reading-label">Lenient reading</span>
+                <span className={"tier-chip tier-" + normalizeForChip(d.lenientTier)}>{d.lenientTier}</span>
+              </div>
+              <p className="mono reading-text">{d.lenientReasoning}</p>
+              <div className="reading-foot mono">
+                {d.contested ? "preserved on-chain" : "agrees with the strict reading"}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+function normalizeForChip(raw: string): string {
+  const t = (raw || "").toLowerCase().trim();
+  if (t === "satisfied" || t === "minor" || t === "material" || t === "critical") return t;
+  return "material";
 }
 
 const RECORD_CSS = `
@@ -452,6 +533,11 @@ const RECORD_CSS = `
   font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;
   color:var(--violet-lit);border:1px solid var(--violet-dim);border-radius:999px;padding:3px 9px;
 }
+.rec-contested-chip{
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;
+  color:var(--minor-lit);border:1px solid rgba(198,163,63,0.4);border-radius:999px;padding:3px 9px;
+  background:rgba(198,163,63,0.08);
+}
 .rec-status{
   font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;
   border:1px solid var(--rule);border-radius:999px;padding:3px 10px;color:var(--text-dim);
@@ -459,6 +545,16 @@ const RECORD_CSS = `
 .rec-created{color:var(--text-dim);}
 .rec-active{color:var(--satisfied-lit);border-color:rgba(78,154,117,0.35);}
 .rec-body{padding:14px;border-top:1px solid var(--rule);}
+.rec-waiting{
+  display:flex;align-items:flex-start;gap:10px;margin-bottom:14px;
+  border:1px solid rgba(198,163,63,0.35);border-radius:6px;padding:11px 13px;
+  background:rgba(198,163,63,0.07);
+  font-family:var(--font-mono);font-size:11.5px;line-height:1.6;color:var(--text);
+}
+.rec-waiting-dot{
+  width:7px;height:7px;border-radius:50%;background:var(--minor-lit);flex-shrink:0;margin-top:5px;
+  box-shadow:0 0 8px var(--minor-lit);animation:recPulse 1.6s ease-in-out infinite;
+}
 .rec-foot{
   margin-top:14px;padding:12px 14px;border:1px dashed var(--rule);border-radius:6px;
   display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
@@ -481,16 +577,44 @@ const RECORD_CSS = `
 .check-cell.fail .check-val{color:var(--critical-lit);}
 .check-cell.pass{border-color:rgba(78,154,117,0.3);}
 .check-cell.fail{border-color:rgba(188,74,63,0.3);}
-.reason-block{background:#10151A;border:1px solid var(--rule);border-radius:4px;padding:12px 14px;}
+.divergence-block{
+  background:rgba(198,163,63,0.07);border:1px solid rgba(198,163,63,0.3);
+  border-radius:4px;padding:12px 14px;margin-bottom:14px;
+}
+.readings{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.reading{background:#10151A;border:1px solid var(--rule);border-radius:4px;padding:12px 14px;}
+.reading-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.reading-label{
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.1em;text-transform:uppercase;
+  color:var(--text-dim);
+}
+.reading-text{font-size:12.5px;line-height:1.65;color:var(--text);margin:0 0 10px;}
+.reading-foot{
+  font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-faint);
+  padding-top:9px;border-top:1px solid var(--rule);
+}
 .cp-detail{border:1px solid var(--rule);border-radius:6px;overflow:hidden;background:var(--surface-raise);}
+.cp-detail.contested{border-color:rgba(198,163,63,0.4);}
 .cp-detail-head{
   width:100%;display:flex;align-items:center;justify-content:space-between;
   background:none;border:none;cursor:pointer;padding:12px 14px;
   transition:background .15s;
 }
 .cp-detail-head:hover{background:rgba(124,111,168,0.06);}
+.cp-contested-tag{
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;
+  color:var(--minor-lit);
+}
+.cp-agreed-tag{
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;
+  color:var(--text-faint);
+}
 .cp-chevron{font-family:var(--font-mono);font-size:16px;color:var(--text-dim);transition:transform .2s var(--ease);line-height:1;}
 .cp-detail-body{padding:0 14px 14px;}
 .addr{color:var(--violet-lit);}
-@media (max-width:640px){.check-grid{grid-template-columns:repeat(2,1fr);}.rec-name{max-width:160px;}}
+@media (max-width:640px){
+  .check-grid{grid-template-columns:repeat(2,1fr);}
+  .rec-name{max-width:160px;}
+  .readings{grid-template-columns:1fr;}
+}
 `;

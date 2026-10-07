@@ -2,10 +2,10 @@
 // Chain ID 61999 (hex 0xF22F).
 
 export const MONITOR_CONTRACT_ADDRESS =
-  "0x906Dd97DEd78B3B9FB198a5227A831b70f8b1180";
+  "0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728";
 
 export const VAULT_CONTRACT_ADDRESS =
-  "0xd0cED4dd1Fb3605686d057c883A4DDd1bE81b71d";
+  "0x6033717CC68BedfbC6f6438383e829d52608c7d9";
 
 // The deployer wallet. On v2 it holds NO contract authority: it is only the
 // protocol fee beneficiary. Create, checkpoint, and settle are all

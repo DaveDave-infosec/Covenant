@@ -138,9 +138,23 @@ export default function OperatorPanel(props: OperatorPanelProps) {
     setBusy("checkpoint");
     try {
       pushLog("Running checkpoint — fetching live endpoint, judging six checks…");
-      const tier = await runCheckpoint(account, monitorId);
-      pushLog(`Checkpoint recorded · verdict: ${tier}`);
-      props.onCheckpointRecorded(tier);
+      const result = await runCheckpoint(account, monitorId);
+
+      if (result.contested) {
+        // The two readings of the same evidence disagreed. The checkpoint is
+        // recorded, but it does not count toward the agreed requirement.
+        pushLog(
+          `Checkpoint CONTESTED — strict read ${result.strictTier}, ` +
+            `lenient read ${result.lenientTier}. It does not satisfy the requirement.`
+        );
+        if (result.divergenceNote) {
+          pushLog(`Divergence: ${result.divergenceNote}`);
+        }
+      } else {
+        pushLog(`Checkpoint recorded — both readings agree: ${result.tier}`);
+      }
+
+      props.onCheckpointRecorded(result.tier);
     } catch (e: any) {
       pushLog("Checkpoint failed: " + (e?.message ?? String(e)));
     } finally {
@@ -215,7 +229,10 @@ export default function OperatorPanel(props: OperatorPanelProps) {
     else if (!bondLocked) gateHint = "Provider must lock the bond before a checkpoint can run.";
     else gateHint = "Customer must lock payment before a checkpoint can run.";
   } else if (!settleReady) {
-    gateHint = "The agreed number of checkpoints must run before this agreement can settle.";
+    gateHint =
+      "Settlement needs the agreed number of UNCONTESTED checkpoints. " +
+      "A checkpoint whose two readings disagreed is recorded, but it does not count " +
+      "toward the requirement — run another checkpoint.";
   }
 
   return (

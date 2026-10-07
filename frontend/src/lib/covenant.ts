@@ -19,8 +19,13 @@ export interface MonitorAgreement {
   exception_desc: string;
   compared_fields: string;
   checkpoint_count: string;
+  contested_count: string;
+  uncontested_count: string;
 }
 
+// A checkpoint carries TWO independently reasoned readings of the same
+// evidence. When their tiers differ the checkpoint is contested, and the
+// divergence note says what they disagreed about.
 export interface MonitorCheckpoint {
   tier: string;
   usability: string;
@@ -29,9 +34,12 @@ export interface MonitorCheckpoint {
   freshness: string;
   functional: string;
   exception: string;
-  reasoning: string;
-  minority_note: string;
-  observed_latency_ms: string;
+  strict_tier: string;
+  strict_reasoning: string;
+  lenient_tier: string;
+  lenient_reasoning: string;
+  contested: boolean;
+  divergence_note: string;
 }
 
 export interface VaultAgreement {
@@ -47,7 +55,9 @@ export interface VaultAgreement {
   monitor_id: string;
   checkpoints_required: string;
   start_cp: string;
+  start_uncontested: string;
   settled_cp_count: string;
+  settled_contested: string;
 }
 
 export interface VaultSettlement {
@@ -57,6 +67,15 @@ export interface VaultSettlement {
   bond_to_provider: string;
   fee_charged: string;
   status: string;
+  settled_contested: string;
+}
+
+// What the vault needs before it will settle, in one read.
+export interface SettleProgress {
+  uncontested: string;
+  contested: string;
+  required: string;
+  ready: boolean;
 }
 
 // ================= READS =================
@@ -95,6 +114,33 @@ export async function getMonitorCheckpointTier(agreementId: string, index: numbe
   return String(t ?? "");
 }
 
+export async function isCheckpointContested(agreementId: string, index: number): Promise<boolean> {
+  const c = await readContract({
+    address: MONITOR_CONTRACT_ADDRESS,
+    functionName: "is_checkpoint_contested",
+    args: [agreementId, index],
+  });
+  return Boolean(c);
+}
+
+export async function getUncontestedCount(agreementId: string): Promise<number> {
+  const n = await readContract({
+    address: MONITOR_CONTRACT_ADDRESS,
+    functionName: "get_uncontested_count",
+    args: [agreementId],
+  });
+  return Number(n);
+}
+
+export async function getContestedCount(agreementId: string): Promise<number> {
+  const n = await readContract({
+    address: MONITOR_CONTRACT_ADDRESS,
+    functionName: "get_contested_count",
+    args: [agreementId],
+  });
+  return Number(n);
+}
+
 export async function getMonitorAgreementCount(): Promise<number> {
   const n = await readContract({
     address: MONITOR_CONTRACT_ADDRESS,
@@ -129,6 +175,16 @@ export async function getVaultSettlement(agreementId: string): Promise<VaultSett
   })) as VaultSettlement;
 }
 
+// The contested gate, in one call: how much uncontested evidence exists,
+// how much was contested, how much is required, and whether settle is open.
+export async function getSettleProgress(agreementId: string): Promise<SettleProgress> {
+  return (await readContract({
+    address: VAULT_CONTRACT_ADDRESS,
+    functionName: "get_settle_progress",
+    args: [agreementId],
+  })) as SettleProgress;
+}
+
 export async function getBalance(account: string): Promise<string> {
   const b = await readContract({
     address: VAULT_CONTRACT_ADDRESS,
@@ -140,15 +196,14 @@ export async function getBalance(account: string): Promise<string> {
 
 // ================= ON-CHAIN RECORD SCAN =================
 //
-// v2: the vault stores its monitor_id on-chain, so pairing is EXACT — no
-// more provider+customer+tier-fingerprint guessing. Each vault agreement
-// names its monitor directly; we fetch that monitor by id.
+// The vault stores its monitor_id on-chain, so pairing is exact. Each vault
+// agreement names its monitor directly; we fetch that monitor by id.
 //
 // SETTLED-ENTRY CACHE: a settled agreement is immutable by contract law, so
 // once read it is cached in localStorage and never fetched again. The cache
-// key embeds both contract addresses, so the v2 redeploy auto-invalidated
-// the v1 cache. A scan costs 2 counts + only the unsettled/uncached vaults
-// and their monitors, and gets cheaper as more agreements settle.
+// key embeds both contract addresses, so a redeploy auto-invalidates it. A
+// scan costs one count plus only the unsettled or uncached vaults and their
+// monitors, and gets cheaper as more agreements settle.
 
 export interface RecordEntry {
   vaultId: string;
@@ -156,10 +211,11 @@ export interface RecordEntry {
   vault: VaultAgreement;
   monitor: MonitorAgreement | null;
   settlement: VaultSettlement | null;
+  progress: SettleProgress | null;
 }
 
 const CACHE_KEY =
-  "covenant_record_v2_" + VAULT_CONTRACT_ADDRESS + "_" + MONITOR_CONTRACT_ADDRESS;
+  "covenant_record_v3_" + VAULT_CONTRACT_ADDRESS + "_" + MONITOR_CONTRACT_ADDRESS;
 
 interface RecordCache {
   version: number;
@@ -169,14 +225,14 @@ interface RecordCache {
 function loadCache(): RecordCache {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
-    if (!raw) return { version: 2, entries: {} };
+    if (!raw) return { version: 3, entries: {} };
     const parsed = JSON.parse(raw) as RecordCache;
-    if (!parsed || parsed.version !== 2 || typeof parsed.entries !== "object") {
-      return { version: 2, entries: {} };
+    if (!parsed || parsed.version !== 3 || typeof parsed.entries !== "object") {
+      return { version: 3, entries: {} };
     }
     return parsed;
   } catch {
-    return { version: 2, entries: {} };
+    return { version: 3, entries: {} };
   }
 }
 
@@ -184,7 +240,7 @@ function saveCache(cache: RecordCache): void {
   try {
     window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch {
-    // storage full or unavailable — cache is an optimization, never load-bearing
+    // storage full or unavailable — the cache is an optimization, never load-bearing
   }
 }
 
@@ -222,16 +278,24 @@ export async function scanOnChainRecord(
   const emit = () => {
     if (onPartial) onPartial(snapshot(byVaultId, vCount));
   };
-  emit(); // cached settled entries render before any network read resolves
+  emit(); // cached settled entries arrive before any network read resolves
 
-  // fetch the vaults we don't have cached
   const fetchedVaults = await Promise.all(toFetch.map((id) => getVaultAgreement(id)));
 
-  // fetch each vault's monitor by its stored monitor_id (exact, on-chain)
   const monitorIds = fetchedVaults.map((v) => (v.monitor_id || "").trim());
   const monitors = await Promise.all(
     monitorIds.map((mid) =>
       mid ? getMonitorAgreement(mid).catch(() => null) : Promise.resolve(null)
+    )
+  );
+
+  // an open agreement needs its settle progress so the record can show
+  // whether it is waiting on uncontested evidence
+  const progresses = await Promise.all(
+    fetchedVaults.map((v) =>
+      v.status === "active"
+        ? getSettleProgress(v.id).catch(() => null)
+        : Promise.resolve(null)
     )
   );
 
@@ -244,11 +308,11 @@ export async function scanOnChainRecord(
       vault: v,
       monitor: monitors[i],
       settlement: null,
+      progress: progresses[i],
     };
     emit();
   }
 
-  // settlements for newly-seen settled vaults; cache each completed entry
   const newlySettled = fetchedVaults.filter((v) => v.status === "settled");
   const settlements = await Promise.all(
     newlySettled.map((v) => getVaultSettlement(v.id))
@@ -313,9 +377,9 @@ export async function createMonitorAgreement(account: string, p: CreateAgreement
   return String(count);
 }
 
-// v2: vault create takes the monitor_id it binds to + the agreed
-// checkpoints_required. The contract cross-contract-verifies the parties
-// against that monitor agreement, so the monitor must be created first.
+// The vault create takes the monitor_id it binds to plus the agreed
+// checkpoints_required. The contract verifies the parties against that
+// monitor agreement cross-contract, so the monitor must be created first.
 export async function createVaultAgreement(
   account: string,
   p: CreateAgreementParams,
@@ -358,8 +422,8 @@ export async function lockBond(account: string, agreementId: string): Promise<an
   });
 }
 
-// v2: settle is permissionless and reads verdicts from the monitor itself.
-// No separate record step exists anymore.
+// Settle is permissionless and reads verdicts from the monitor itself. It
+// reverts unless enough UNCONTESTED checkpoints have run since activation.
 export async function settleVault(account: string, agreementId: string): Promise<any> {
   return writeContract({
     account,
@@ -369,12 +433,22 @@ export async function settleVault(account: string, agreementId: string): Promise
   });
 }
 
-// v2: a checkpoint is a single monitor call. The vault reads the tier at
-// settle time, so there's nothing to record back.
+// What a finished checkpoint produced: the tier of record, and whether the
+// two readings disagreed.
+export interface CheckpointResult {
+  tier: string;
+  contested: boolean;
+  strictTier: string;
+  lenientTier: string;
+  divergenceNote: string;
+}
+
+// A checkpoint is a single monitor call. The vault reads the tiers at settle
+// time, so there is nothing to record back.
 export async function runCheckpoint(
   account: string,
   monitorAgreementId: string
-): Promise<string> {
+): Promise<CheckpointResult> {
   await writeContract({
     account,
     address: MONITOR_CONTRACT_ADDRESS,
@@ -383,7 +457,13 @@ export async function runCheckpoint(
   });
   const count = await getMonitorCheckpointCount(monitorAgreementId);
   const latest = await getMonitorCheckpoint(monitorAgreementId, count - 1);
-  return normalizeTier(latest.tier);
+  return {
+    tier: normalizeTier(latest.tier),
+    contested: Boolean(latest.contested),
+    strictTier: normalizeTier(latest.strict_tier),
+    lenientTier: normalizeTier(latest.lenient_tier),
+    divergenceNote: latest.divergence_note || "",
+  };
 }
 
 function normalizeTier(raw: string): string {
