@@ -6,12 +6,13 @@ Two layers of verification, both runnable.
 |------|----------------|-------|
 | `test_monitor.py` | The monitor's real `run_checkpoint` path: two readings, contested detection, counters | nothing |
 | `test_vault.py` | The vault's real settlement path: the contested gate, permissionless settle, conservation | nothing |
+| `test_contested_exclusion.py` | Contested checkpoints take no part in the outcome: excluded from the denominator and every severity count | nothing |
 | `test_onchain.py` | The same properties on the live contracts, against real settled and blocked agreements | network access |
 
 ```bash
 pip install genlayer-test==0.29.2
-python -m pytest tests/test_monitor.py tests/test_vault.py -q   # 44 passed
-python -m pytest tests/test_onchain.py -q                       # reads the live chain
+python -m pytest tests/test_monitor.py tests/test_vault.py tests/test_contested_exclusion.py -q   # 49 passed
+python -m pytest tests/test_onchain.py -q                                                          # 5 passed
 ```
 
 The first run downloads the GenLayer SDK (around 200 MB) and takes a few
@@ -24,7 +25,7 @@ GenLayer Studio Network, chain 61999.
 | Contract | Address |
 |----------|---------|
 | CovenantMonitor | `0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728` |
-| CovenantVault | `0x6033717CC68BedfbC6f6438383e829d52608c7d9` |
+| CovenantVault | `0x8c668Ebc2A0F0fA9Cc2b6CD4a60ca202a1085f83` |
 
 The sources in `contracts/` are the sources deployed at those addresses.
 

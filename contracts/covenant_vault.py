@@ -156,7 +156,6 @@ class CovenantVault(gl.Contract):
 
         total = int(mon.view().get_checkpoint_count(monitor_id))
         start = int(self.v_start_cp.get(aid, u256(0)))
-        n = total - start
 
         total_unc = int(mon.view().get_uncontested_count(monitor_id))
         start_unc = int(self.v_start_uncontested.get(aid, u256(0)))
@@ -165,14 +164,22 @@ class CovenantVault(gl.Contract):
         required = int(self.v_checkpoints_required.get(aid, u256(1)))
         assert uncontested >= required, "not enough uncontested checkpoints; contested evidence requires another checkpoint"
 
+        # A contested checkpoint is recorded, but it takes NO part in the
+        # outcome: it is excluded from the denominator AND from every severity
+        # count. Evidence whose two readings could not agree must not move
+        # money in either direction, so the tally runs only on the checkpoints
+        # both readings agreed about.
+        n = 0
         c_minor = 0
         c_material = 0
         c_critical = 0
         contested_seen = 0
         for i in range(start, total):
-            t = str(mon.view().get_checkpoint_tier(monitor_id, u256(i))).lower().strip()
             if mon.view().is_checkpoint_contested(monitor_id, u256(i)):
                 contested_seen += 1
+                continue
+            n += 1
+            t = str(mon.view().get_checkpoint_tier(monitor_id, u256(i))).lower().strip()
             if t == "minor":
                 c_minor += 1
             elif t == "material":
@@ -181,6 +188,9 @@ class CovenantVault(gl.Contract):
                 c_critical += 1
             elif t != "satisfied":
                 c_material += 1
+
+        # the denominator is the uncontested evidence, by construction
+        assert n == uncontested, "tally denominator must equal the uncontested count"
 
         if c_critical >= 1 or (c_material * 2) > n:
             outcome = "critical"

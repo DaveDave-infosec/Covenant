@@ -35,7 +35,7 @@ from genlayer_py import create_account, create_client
 from genlayer_py.chains import studionet
 
 MONITOR = "0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728"
-VAULT = "0x6033717CC68BedfbC6f6438383e829d52608c7d9"
+VAULT = "0x8c668Ebc2A0F0fA9Cc2b6CD4a60ca202a1085f83"
 
 CONTESTED_VAULT_ID = "2"   # blocked: every checkpoint contested
 SETTLED_VAULT_ID = "1"     # released: uncontested checkpoint, settled

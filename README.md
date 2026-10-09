@@ -121,15 +121,15 @@ settled a live agreement:
 [settlement transaction](https://explorer-studio.genlayer.com/tx/0x29d881888c25f9e499e7728ce32979793372f2e6dc2a13a0622c65cd7d03099e)
 (SUCCESS, `"satisfied"`, FINALIZED).
 
-**49 tests, no skips.**
+**54 tests, no skips.**
 
 ```bash
 pip install genlayer-test==0.29.2
-python -m pytest tests/test_monitor.py tests/test_vault.py -q   # 44 passed
+python -m pytest tests/test_monitor.py tests/test_vault.py tests/test_contested_exclusion.py -q   # 49 passed
 python -m pytest tests/test_onchain.py -q                       # 5 passed
 ```
 
-The first 44 load the real contracts into an in-process GenLayer VM and call
+The first 49 load the real contracts into an in-process GenLayer VM and call
 them. The last 5 read the live contracts and verify that vault #2 is blocked by
 contested evidence while vault #1 settled on clear evidence. See
 [`tests/README.md`](./tests/README.md).
@@ -141,7 +141,7 @@ GenLayer Studio Network, chain 61999 (hex `0xF22F`).
 | Contract | Address |
 |----------|---------|
 | CovenantMonitor | `0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728` |
-| CovenantVault | `0x6033717CC68BedfbC6f6438383e829d52608c7d9` |
+| CovenantVault | `0x8c668Ebc2A0F0fA9Cc2b6CD4a60ca202a1085f83` |
 
 The sources in `contracts/` are the sources deployed at those addresses.
 

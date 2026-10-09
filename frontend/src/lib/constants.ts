@@ -5,7 +5,7 @@ export const MONITOR_CONTRACT_ADDRESS =
   "0x18ECD959aE09E1B61A5DBDb89B733Bf39a161728";
 
 export const VAULT_CONTRACT_ADDRESS =
-  "0x6033717CC68BedfbC6f6438383e829d52608c7d9";
+  "0x8c668Ebc2A0F0fA9Cc2b6CD4a60ca202a1085f83";
 
 // The deployer wallet. On v2 it holds NO contract authority: it is only the
 // protocol fee beneficiary. Create, checkpoint, and settle are all

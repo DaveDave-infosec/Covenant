@@ -256,8 +256,10 @@ def test_settlement_records_how_many_contested_checkpoints_it_saw(vault_env):
     fake.add_checkpoint("satisfied", False)
     vault.settle(aid)
 
+    # the two counts are recorded separately: one checkpoint was contested and
+    # excluded, so the settlement tallied the one that was not
     assert vault.get_settlement(aid)["settled_contested"] == "1"
-    assert vault.get_agreement(aid)["settled_cp_count"] == "2"
+    assert vault.get_agreement(aid)["settled_cp_count"] == "1"
 
 
 # --------------------------------------------------------------------------
