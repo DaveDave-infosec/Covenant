@@ -110,9 +110,12 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
 
   async function loadEntryDetails(entry: RecordEntry): Promise<EntryDetails> {
     if (entry.monitor && entry.monitorId) {
-      const n = Number(entry.monitor.checkpoint_count) || 0;
+      const total = Number(entry.monitor.checkpoint_count) || 0;
+      // Start at the activation snapshot: earlier checkpoints are the
+      // monitor's history and never counted toward this agreement.
+      const start = Number(entry.vault.start_cp) || 0;
       const idx: number[] = [];
-      for (let i = 0; i < n; i++) idx.push(i);
+      for (let i = start; i < total; i++) idx.push(i);
       const cps = await Promise.all(idx.map((i) => getMonitorCheckpoint(entry.monitorId!, i)));
       return {
         checkpoints: cps.map((cp) => ({ tier: normTier(cp.tier) })),
@@ -155,8 +158,13 @@ export default function OnChainRecord({ account, onLoad }: OnChainRecordProps) {
     return a.slice(0, 8) + "…" + a.slice(-6);
   }
 
+  // Count only checkpoints since activation. Anything that ran before both
+  // sides locked sits behind the vault's start_cp snapshot and belongs to the
+  // monitor's prior history, not to this agreement.
   function cpCountOf(entry: RecordEntry): string {
-    return entry.monitor?.checkpoint_count ?? "0";
+    const total = Number(entry.monitor?.checkpoint_count ?? "0") || 0;
+    const start = Number(entry.vault.start_cp ?? "0") || 0;
+    return String(Math.max(0, total - start));
   }
 
   // Count contested checkpoints the SAME way the vault's settle gate does:
